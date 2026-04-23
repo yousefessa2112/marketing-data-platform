@@ -1,4 +1,8 @@
 .mypy_cache/
 .pytest_cache/
 __pycache__/
+*.pyc
 data/marketing.db
+data/pipeline_log.csv
+data/quality_report.txt
+data/output/
