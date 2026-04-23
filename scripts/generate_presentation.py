@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, TypedDict, cast
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -15,544 +15,397 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = PROJECT_ROOT / "data" / "marketing.db"
 OUTPUT_PATH = PROJECT_ROOT / "dashboard" / "Marketing_Data_Pipeline_Presentation.pptx"
 
-NAVY = RGBColor(13, 27, 62)
-TEAL = RGBColor(0, 134, 173)
-LIGHT_BG = RGBColor(245, 248, 252)
-ACCENT = RGBColor(255, 166, 43)
-TEXT_DARK = RGBColor(36, 46, 66)
+SLIDE_W = 13.333
+SLIDE_H = 7.5
+MIN_X = 1.0
+MIN_Y = 1.5
+MAX_TEXT_W = 8.0
+
+HEADER = RGBColor(27, 42, 74)  # #1B2A4A
+ACCENT = RGBColor(59, 130, 246)  # #3B82F6
+LIGHT = RGBColor(243, 244, 246)  # #F3F4F6
 WHITE = RGBColor(255, 255, 255)
+DARK = RGBColor(31, 41, 55)
 
 
-def query_data() -> dict[str, object]:
-    with sqlite3.connect(DB_PATH) as conn:
-        total_cost = conn.execute("SELECT ROUND(SUM(cost), 2) FROM campaign_performance;").fetchone()[0]
-        total_clicks = conn.execute("SELECT SUM(clicks) FROM campaign_performance;").fetchone()[0]
-        total_conversions = conn.execute("SELECT SUM(conversions) FROM campaign_performance;").fetchone()[0]
-        total_impressions = conn.execute("SELECT SUM(impressions) FROM campaign_performance;").fetchone()[0]
-
-        highest_cost = conn.execute(
-            """
-            SELECT campaign_id, ROUND(SUM(cost), 2) AS total_cost
-            FROM campaign_performance
-            GROUP BY campaign_id
-            ORDER BY total_cost DESC
-            LIMIT 1;
-            """
-        ).fetchone()
-
-        highest_ctr = conn.execute(
-            """
-            SELECT campaign_id, ROUND(AVG(ctr) * 100, 2) AS avg_ctr_percent
-            FROM campaign_performance
-            GROUP BY campaign_id
-            ORDER BY avg_ctr_percent DESC
-            LIMIT 1;
-            """
-        ).fetchone()
-
-        lowest_cpa = conn.execute(
-            """
-            SELECT campaign_id, ROUND(AVG(cpa), 2) AS avg_cpa
-            FROM campaign_performance
-            GROUP BY campaign_id
-            ORDER BY avg_cpa ASC
-            LIMIT 1;
-            """
-        ).fetchone()
-
-        dim_counts = conn.execute(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM dim_campaign) AS campaign_count,
-                (SELECT COUNT(*) FROM dim_channel) AS channel_count,
-                (SELECT COUNT(*) FROM dim_date) AS date_count,
-                (SELECT COUNT(*) FROM fact_campaign_daily) AS fact_count;
-            """
-        ).fetchone()
-
-    return {
-        "total_cost": float(total_cost or 0),
-        "total_clicks": int(total_clicks or 0),
-        "total_conversions": int(total_conversions or 0),
-        "total_impressions": int(total_impressions or 0),
-        "highest_cost": highest_cost,
-        "highest_ctr": highest_ctr,
-        "lowest_cpa": lowest_cpa,
-        "dim_counts": dim_counts,
-    }
+class DataSnapshot(TypedDict):
+    channels: list[tuple[str, float, float, float, int, int]]
+    row_count: int
+    date_range: tuple[str, str, int]
+    monthly: list[tuple[str, int]]
 
 
-def add_title(slide, title: str, subtitle: str | None = None) -> None:
-    title_box = slide.shapes.add_textbox(Inches(0.7), Inches(0.35), Inches(12.0), Inches(0.9))
+def assert_textbox_bounds(x: float, y: float, w: float, h: float) -> None:
+    if x < MIN_X:
+        raise ValueError(f"Text box left bound too small: {x}")
+    if y < MIN_Y:
+        raise ValueError(f"Text box top bound too small: {y}")
+    if w > MAX_TEXT_W:
+        raise ValueError(f"Text box width exceeds limit: {w}")
+    if x + w > (SLIDE_W - 1.0):
+        raise ValueError("Text box exceeds right margin")
+    if y + h > (SLIDE_H - 0.6):
+        raise ValueError("Text box exceeds lower slide space")
+
+
+def add_safe_textbox(slide, x: float, y: float, w: float, h: float):
+    assert_textbox_bounds(x, y, w, h)
+    return slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+
+
+def style_text(run_font, size: int, color: RGBColor, bold: bool = False) -> None:
+    run_font.name = "Calibri"
+    run_font.size = Pt(size)
+    run_font.bold = bold
+    run_font.color.rgb = color
+
+
+def add_slide_base(prs: Any, title: str, subtitle: str | None = None):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.background.fill.solid()
+    slide.background.fill.fore_color.rgb = WHITE
+
+    # Design elements first (behind text)
+    top_bar = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(0), Inches(0), Inches(SLIDE_W), Inches(1.05))
+    top_bar.fill.solid()
+    top_bar.fill.fore_color.rgb = HEADER
+    top_bar.line.fill.background()
+
+    accent_strip = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(0), Inches(1.05), Inches(SLIDE_W), Inches(0.12)
+    )
+    accent_strip.fill.solid()
+    accent_strip.fill.fore_color.rgb = ACCENT
+    accent_strip.line.fill.background()
+
+    title_box = add_safe_textbox(slide, 1.0, 1.5, 8.0, 0.7)
     tf = title_box.text_frame
     tf.clear()
     p = tf.paragraphs[0]
     p.text = title
-    p.font.size = Pt(36)
-    p.font.bold = True
-    p.font.color.rgb = NAVY
-    p.font.name = "Calibri"
+    style_text(p.font, 30, HEADER, bold=True)
+
     if subtitle:
-        sub_box = slide.shapes.add_textbox(Inches(0.7), Inches(1.1), Inches(11.7), Inches(0.6))
-        stf = sub_box.text_frame
+        subtitle_box = add_safe_textbox(slide, 1.0, 2.15, 8.0, 0.5)
+        stf = subtitle_box.text_frame
         stf.clear()
         sp = stf.paragraphs[0]
         sp.text = subtitle
-        sp.font.size = Pt(18)
-        sp.font.color.rgb = TEAL
-        sp.font.name = "Calibri"
+        style_text(sp.font, 15, ACCENT, bold=False)
+    return slide
 
 
-def add_bg(slide, color: RGBColor) -> None:
-    fill = slide.background.fill
-    fill.solid()
-    fill.fore_color.rgb = color
-
-
-def add_bullets(slide, items: list[str], x: float, y: float, w: float, h: float, font_size: int = 18) -> None:
-    box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
+def add_bullets(slide, items: list[str], x: float = 1.0, y: float = 2.75, w: float = 8.0, h: float = 3.9) -> None:
+    if len(items) > 5:
+        raise ValueError("No more than 5 bullets per slide")
+    box = add_safe_textbox(slide, x, y, w, h)
     tf = box.text_frame
     tf.clear()
+    tf.word_wrap = True
     for i, item in enumerate(items):
+        if len(item.split()) > 15:
+            raise ValueError(f"Bullet too long: {item}")
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.text = item
         p.level = 0
-        p.font.size = Pt(font_size)
-        p.font.name = "Calibri"
-        p.font.color.rgb = TEXT_DARK
+        style_text(p.font, 20, DARK)
+        p.space_after = Pt(10)
 
 
-def add_code_box(slide, code: str, x: float, y: float, w: float, h: float) -> None:
-    shape = slide.shapes.add_shape(
-        MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h)
+def query_data() -> DataSnapshot:
+    with sqlite3.connect(DB_PATH) as conn:
+        raw_channels = conn.execute(
+            """
+            SELECT campaign_id, ROUND(SUM(cost),2), ROUND(AVG(ctr)*100,2), ROUND(AVG(cpa),2),
+                   SUM(clicks), SUM(conversions)
+            FROM campaign_performance
+            GROUP BY campaign_id
+            ORDER BY SUM(cost) DESC
+            """
+        ).fetchall()
+        row_count_raw = conn.execute("SELECT COUNT(*) FROM campaign_performance").fetchone()
+        date_range_raw = conn.execute(
+            "SELECT MIN(date), MAX(date), COUNT(DISTINCT date) FROM campaign_performance"
+        ).fetchone()
+        raw_monthly = conn.execute(
+            """
+            SELECT substr(date,1,7), SUM(clicks)
+            FROM campaign_performance
+            GROUP BY substr(date,1,7)
+            ORDER BY substr(date,1,7)
+            """
+        ).fetchall()
+    channels: list[tuple[str, float, float, float, int, int]] = []
+    for row in raw_channels:
+        channels.append((str(row[0]), float(row[1]), float(row[2]), float(row[3]), int(row[4]), int(row[5])))
+    monthly: list[tuple[str, int]] = []
+    for row in raw_monthly:
+        monthly.append((str(row[0]), int(row[1])))
+
+    date_range = (
+        str(date_range_raw[0]),
+        str(date_range_raw[1]),
+        int(date_range_raw[2]),
     )
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = RGBColor(26, 35, 52)
-    shape.line.color.rgb = TEAL
-    tf = shape.text_frame
-    tf.clear()
-    p = tf.paragraphs[0]
-    p.text = code
-    p.font.name = "Consolas"
-    p.font.size = Pt(12)
-    p.font.color.rgb = WHITE
+    row_count = int(row_count_raw[0])
+    return {"channels": channels, "row_count": row_count, "date_range": date_range, "monthly": monthly}
+
+
+def add_card(slide, x: float, y: float, w: float, h: float, title: str, value: str, subtitle: str) -> None:
+    card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
+    card.fill.solid()
+    card.fill.fore_color.rgb = LIGHT
+    card.line.color.rgb = ACCENT
+    card.line.width = Pt(1.25)
+
+    title_box = add_safe_textbox(slide, x + 0.2, y + 0.15, min(w - 0.4, 8.0), 0.35)
+    tp = title_box.text_frame.paragraphs[0]
+    tp.text = title
+    style_text(tp.font, 15, HEADER, True)
+
+    value_box = add_safe_textbox(slide, x + 0.2, y + 0.55, min(w - 0.4, 8.0), 0.65)
+    vp = value_box.text_frame.paragraphs[0]
+    vp.text = value
+    style_text(vp.font, 40, ACCENT, True)
+
+    sub_box = add_safe_textbox(slide, x + 0.2, y + 1.25, min(w - 0.4, 8.0), 0.35)
+    sp = sub_box.text_frame.paragraphs[0]
+    sp.text = subtitle
+    style_text(sp.font, 14, DARK, False)
 
 
 def make_presentation() -> None:
-    stats = query_data()
+    data = query_data()
+    channels = cast(list[tuple[str, float, float, float, int, int]], data["channels"])
+    row_count = cast(int, data["row_count"])
+    monthly = cast(list[tuple[str, int]], data["monthly"])
+
     prs = Presentation()
-    prs.slide_width = Inches(13.333)
-    prs.slide_height = Inches(7.5)
-    layout = prs.slide_layouts[6]
+    prs.slide_width = Inches(SLIDE_W)
+    prs.slide_height = Inches(SLIDE_H)
 
-    # 1) Title
-    s1 = prs.slides.add_slide(layout)
-    add_bg(s1, NAVY)
-    tbox = s1.shapes.add_textbox(Inches(0.8), Inches(2.2), Inches(11.8), Inches(1.4))
-    tf = tbox.text_frame
-    tf.clear()
-    p = tf.paragraphs[0]
-    p.text = "Multi-Channel Marketing Data Pipeline"
-    p.font.size = Pt(44)
-    p.font.bold = True
-    p.font.color.rgb = WHITE
-    p.font.name = "Calibri"
-    p.alignment = PP_ALIGN.CENTER
-    sbox = s1.shapes.add_textbox(Inches(1.6), Inches(3.7), Inches(10.3), Inches(0.9))
-    stf = sbox.text_frame
-    sp = stf.paragraphs[0]
-    sp.text = "From raw campaign data to SQL insights and an interactive dashboard"
-    sp.font.size = Pt(22)
-    sp.font.color.rgb = ACCENT
-    sp.font.name = "Calibri"
-    sp.alignment = PP_ALIGN.CENTER
+    # 1. Title
+    s1 = add_slide_base(
+        prs,
+        "Marketing Campaign Performance Analysis",
+        "Multi-Channel Insights & Optimization Opportunities",
+    )
+    hero = s1.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(1.0), Inches(3.0), Inches(8.0), Inches(2.3))
+    hero.fill.solid()
+    hero.fill.fore_color.rgb = LIGHT
+    hero.line.color.rgb = ACCENT
+    title_msg = add_safe_textbox(s1, 1.35, 3.65, 7.3, 1.1)
+    tp = title_msg.text_frame.paragraphs[0]
+    tp.text = "Executive View: Spend, Efficiency, and Growth Opportunities"
+    tp.alignment = PP_ALIGN.CENTER
+    style_text(tp.font, 22, HEADER, True)
 
-    # 2) Project objective
-    s2 = prs.slides.add_slide(layout)
-    add_bg(s2, LIGHT_BG)
-    add_title(s2, "What this project is about", "Objective and problem solved")
+    # 2. Challenge
+    s2 = add_slide_base(prs, "The Challenge")
     add_bullets(
         s2,
         [
-            "Marketing teams collect campaign metrics from multiple channels, but the data is often fragmented and hard to compare.",
-            "This project builds one consistent pipeline that ingests campaign data, cleans it, stores it centrally, and produces analysis-ready outputs.",
-            "The goal is fast, repeatable answers to budget, engagement, and efficiency questions without manual spreadsheet work.",
+            "Marketing data lives in separate channel reports.",
+            "Leaders cannot compare performance quickly.",
+            "Budget decisions become slower and riskier.",
+            "A unified view reveals where money works best.",
         ],
-        0.9,
-        1.8,
-        12.0,
-        4.8,
-        20,
     )
 
-    # 3) Tools used
-    s3 = prs.slides.add_slide(layout)
-    add_bg(s3, WHITE)
-    add_title(s3, "Tools used in this pipeline")
-    cards = [
-        ("Python", "Orchestrates each pipeline step and automation scripts."),
-        ("pandas", "Cleans, validates, transforms, and enriches campaign records."),
-        ("SQLite", "Stores cleaned data in a lightweight, queryable database."),
-        ("SQL + Window Functions", "Drives CTE, LAG, RANK, rolling, and cumulative analysis."),
-        ("PySpark", "Shows scalable transformation and window-based feature engineering."),
-        ("Plotly + Power BI Exports", "Interactive dashboard plus BI-ready semantic extracts."),
-    ]
-    x = 0.8
-    for idx, (tool, desc) in enumerate(cards):
-        if idx and idx % 3 == 0:
-            x = 0.8
-        row = idx // 3
-        y = 1.7 + (row * 2.5)
-        w = 4.1
-        h = 2.0
-        card = s3.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
-        card.fill.solid()
-        card.fill.fore_color.rgb = LIGHT_BG
-        card.line.color.rgb = TEAL
-        ctf = card.text_frame
-        ctf.clear()
-        p1 = ctf.paragraphs[0]
-        p1.text = tool
-        p1.font.bold = True
-        p1.font.size = Pt(20)
-        p1.font.color.rgb = NAVY
-        p2 = ctf.add_paragraph()
-        p2.text = desc
-        p2.font.size = Pt(13)
-        p2.font.color.rgb = TEXT_DARK
-        p2.space_before = Pt(6)
-        x += 4.3
+    # 3. Data overview
+    s3 = add_slide_base(prs, "Data Overview")
+    add_card(s3, 1.0, 2.8, 2.5, 1.8, "Channels", "5", "Search, Social, Display, Email")
+    add_card(s3, 3.8, 2.8, 2.5, 1.8, "Daily Records", f"{row_count:,}", "Consistent daily performance tracking")
+    add_card(s3, 6.5, 2.8, 2.5, 1.8, "Campaign Window", "6 Months", "180 daily snapshots")
 
-    # 4) Data overview
-    s4 = prs.slides.add_slide(layout)
-    add_bg(s4, LIGHT_BG)
-    add_title(s4, "The data we work with")
+    # 4. Metrics explained
+    s4 = add_slide_base(prs, "Key Metrics Explained")
+    add_card(s4, 1.0, 2.8, 2.5, 2.2, "CTR", "Clicks / Views", "How many people click")
+    add_card(s4, 3.8, 2.8, 2.5, 2.2, "CPC", "Cost / Click", "What each click costs")
+    add_card(s4, 6.5, 2.8, 2.5, 2.2, "CPA", "Cost / Customer", "What each new customer costs")
+
+    # 5. Top findings - spend
+    s5 = add_slide_base(prs, "Top Findings - Spend")
+    add_bullets(s5, ["Search_Google is the biggest spender at $164K."], y=2.75, h=0.7)
+    max_spend = max(float(c[1]) for c in channels)
+    start_y = 3.45
+    for i, channel in enumerate(channels):
+        name = str(channel[0]).replace("_", " ")
+        spend = float(channel[1])
+        y = start_y + i * 0.62
+        label = add_safe_textbox(s5, 1.0, y, 2.2, 0.35)
+        lp = label.text_frame.paragraphs[0]
+        lp.text = name
+        style_text(lp.font, 18, DARK)
+
+        bar_w = 4.7 * (spend / max_spend)
+        bar = s5.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(3.25), Inches(y + 0.05), Inches(bar_w), Inches(0.28))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = ACCENT
+        bar.line.fill.background()
+
+        val = add_safe_textbox(s5, 8.1, y, 0.9, 0.35)
+        vp = val.text_frame.paragraphs[0]
+        vp.text = f"${spend/1000:.1f}K"
+        style_text(vp.font, 18, HEADER, True)
+
+    # 6. Top findings - efficiency
+    s6 = add_slide_base(prs, "Top Findings - Efficiency")
+    left_card = s6.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(1.0), Inches(2.9), Inches(3.8), Inches(2.1))
+    left_card.fill.solid()
+    left_card.fill.fore_color.rgb = LIGHT
+    left_card.line.color.rgb = ACCENT
+    right_card = s6.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(5.2), Inches(2.9), Inches(3.8), Inches(2.1))
+    right_card.fill.solid()
+    right_card.fill.fore_color.rgb = LIGHT
+    right_card.line.color.rgb = ACCENT
+
+    t1 = add_safe_textbox(s6, 1.25, 3.15, 3.3, 0.5)
+    t1p = t1.text_frame.paragraphs[0]
+    t1p.text = "Most Cost-Efficient"
+    style_text(t1p.font, 16, HEADER, True)
+    v1 = add_safe_textbox(s6, 1.25, 3.62, 3.3, 0.7)
+    v1p = v1.text_frame.paragraphs[0]
+    v1p.text = "Email: $7.56 CPA"
+    style_text(v1p.font, 38, ACCENT, True)
+
+    t2 = add_safe_textbox(s6, 5.45, 3.15, 3.3, 0.5)
+    t2p = t2.text_frame.paragraphs[0]
+    t2p.text = "Highest Engagement"
+    style_text(t2p.font, 16, HEADER, True)
+    v2 = add_safe_textbox(s6, 5.45, 3.62, 3.3, 0.7)
+    v2p = v2.text_frame.paragraphs[0]
+    v2p.text = "Search: 3.96% CTR"
+    style_text(v2p.font, 38, ACCENT, True)
+
+    # 7. Channel comparison
+    s7 = add_slide_base(prs, "Channel Comparison")
+    cols = [("Channel", 2.8), ("Spend", 1.7), ("CTR", 1.6), ("CPA", 1.9)]
+    x = 1.0
+    for header, width in cols:
+        head = s7.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(x), Inches(2.8), Inches(width), Inches(0.55))
+        head.fill.solid()
+        head.fill.fore_color.rgb = HEADER
+        head.line.color.rgb = WHITE
+        htxt = add_safe_textbox(s7, x + 0.08, 2.9, min(width - 0.16, 8.0), 0.35)
+        hp = htxt.text_frame.paragraphs[0]
+        hp.text = header
+        style_text(hp.font, 18, WHITE, True)
+        x += width
+
+    for i, row in enumerate(channels):
+        y = 3.35 + i * 0.58
+        vals = [
+            str(row[0]).replace("_", " "),
+            f"${float(row[1])/1000:.1f}K",
+            f"{float(row[2]):.2f}%",
+            f"${float(row[3]):.2f}",
+        ]
+        x = 1.0
+        for j, (_, width) in enumerate(cols):
+            cell = s7.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(x), Inches(y), Inches(width), Inches(0.55))
+            cell.fill.solid()
+            cell.fill.fore_color.rgb = LIGHT if i % 2 == 0 else WHITE
+            cell.line.color.rgb = RGBColor(220, 223, 228)
+            ctxt = add_safe_textbox(s7, x + 0.08, y + 0.09, min(width - 0.16, 8.0), 0.35)
+            cp = ctxt.text_frame.paragraphs[0]
+            cp.text = vals[j]
+            style_text(cp.font, 18, DARK)
+            x += width
+
+    # 8. Trends
+    s8 = add_slide_base(prs, "Trends: Clicks Over 6 Months")
     add_bullets(
-        s4,
-        [
-            "Daily performance data for 5 campaign channels: Search_Google, Social_FB, Social_IG, Display_Programmatic, Email_Newsletter.",
-            "Core fields: impressions, clicks, cost, conversions, and date.",
-            f"Dataset scale: {stats['total_impressions']:,} impressions, {stats['total_clicks']:,} clicks, {stats['total_conversions']:,} conversions, ${stats['total_cost']:,.2f} spend.",
-            "This gives enough volume to compare channel efficiency and trend behavior over time.",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        4.8,
-    )
-
-    # 5) Pipeline flow
-    s5 = prs.slides.add_slide(layout)
-    add_bg(s5, WHITE)
-    add_title(s5, "Pipeline flow")
-    flow = ["Raw Data", "Cleaning", "Database", "Analysis", "Dashboard"]
-    x = 0.7
-    for i, label in enumerate(flow):
-        box = s5.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(3.0), Inches(2.2), Inches(1.2))
-        box.fill.solid()
-        box.fill.fore_color.rgb = NAVY if i % 2 == 0 else TEAL
-        box.line.color.rgb = WHITE
-        tf = box.text_frame
-        tf.clear()
-        p = tf.paragraphs[0]
-        p.text = label
-        p.font.bold = True
-        p.font.size = Pt(18)
-        p.font.color.rgb = WHITE
-        p.alignment = PP_ALIGN.CENTER
-        if i < len(flow) - 1:
-            arrow = s5.shapes.add_shape(
-                MSO_AUTO_SHAPE_TYPE.RIGHT_ARROW, Inches(x + 2.25), Inches(3.3), Inches(0.55), Inches(0.5)
-            )
-            arrow.fill.solid()
-            arrow.fill.fore_color.rgb = ACCENT
-            arrow.line.color.rgb = ACCENT
-        x += 2.55
-    add_code_box(
-        s5,
-        "python3 scripts/run_pipeline.py\n# runs: generate -> clean -> load -> analyze -> dashboard",
-        2.6,
-        4.8,
-        8.1,
-        1.5,
-    )
-
-    # 6) Data cleaning
-    s6 = prs.slides.add_slide(layout)
-    add_bg(s6, LIGHT_BG)
-    add_title(s6, "Data cleaning and feature engineering")
-    add_bullets(
-        s6,
-        [
-            "Removed nulls and duplicates to avoid distorted metrics and double counting.",
-            "Converted date and numeric fields into consistent types for reliable analysis.",
-            "Calculated CTR = clicks/impressions, CPC = cost/clicks, CPA = cost/conversions.",
-            "CTR shows engagement, CPC shows traffic acquisition cost, CPA shows conversion efficiency.",
-        ],
-        0.8,
-        1.7,
-        6.1,
-        4.8,
-    )
-    add_code_box(
-        s6,
-        "df['ctr'] = (df['clicks'] / df['impressions']).round(6)\n"
-        "df['cpc'] = (df['cost'] / df['clicks']).round(4)\n"
-        "df['cpa'] = (df['cost'] / df['conversions']).round(4)",
-        7.0,
-        2.1,
-        5.6,
-        2.3,
-    )
-
-    # 7) Database
-    s7 = prs.slides.add_slide(layout)
-    add_bg(s7, WHITE)
-    add_title(s7, "SQLite storage design")
-    add_bullets(
-        s7,
-        [
-            "Cleaned data is loaded into SQLite table: campaign_performance.",
-            "The table acts as the analytical source of truth for SQL reporting.",
-        ],
-        0.8,
-        1.7,
-        5.8,
-        1.6,
-    )
-    add_code_box(
-        s7,
-        "CREATE TABLE campaign_performance (\n"
-        "  date TEXT,\n"
-        "  campaign_id TEXT,\n"
-        "  impressions INTEGER,\n"
-        "  clicks INTEGER,\n"
-        "  cost REAL,\n"
-        "  conversions INTEGER,\n"
-        "  ctr REAL,\n"
-        "  cpc REAL,\n"
-        "  cpa REAL\n);",
-        6.2,
-        1.8,
-        6.4,
-        4.4,
-    )
-
-    # 8) SQL analysis and results
-    s8 = prs.slides.add_slide(layout)
-    add_bg(s8, LIGHT_BG)
-    add_title(s8, "SQL analysis: key business questions + results")
-    rows = [
-        "1) Which campaign has the highest total cost?  Search_Google at $164,215.96",
-        "2) Which campaign has the highest CTR?  Search_Google at 3.96%",
-        "3) How do clicks trend over time?  Daily aggregate query shows a stable, seasonal-like pattern.",
-        "4) Which campaign has the lowest average CPA?  Email_Newsletter at $8.11",
-    ]
-    add_bullets(s8, rows, 0.9, 1.8, 12.0, 3.2, 16)
-    add_code_box(
         s8,
-        "SELECT campaign_id, ROUND(SUM(cost),2) AS total_cost\nFROM campaign_performance\n"
-        "GROUP BY campaign_id\nORDER BY total_cost DESC;",
-        0.9,
-        5.0,
-        6.0,
-        1.6,
+        [
+            "Clicks rise through winter and peak in March.",
+            "April softens, likely seasonal demand shift.",
+            "Overall trend stays healthy across channels.",
+        ],
+        y=2.75,
+        h=1.5,
     )
-    add_code_box(
-        s8,
-        "SELECT campaign_id, ROUND(AVG(cpa),2) AS avg_cpa\nFROM campaign_performance\n"
-        "GROUP BY campaign_id\nORDER BY avg_cpa ASC;",
-        7.0,
-        5.0,
-        5.6,
-        1.6,
-    )
+    max_clicks = max(int(m[1]) for m in monthly)
+    for i, (month, clicks) in enumerate(monthly[:6]):
+        x = 1.0 + i * 1.25
+        h = 1.8 * (int(clicks) / max_clicks) + 0.3
+        bar = s8.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(5.15 - h), Inches(0.8), Inches(h))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = ACCENT if i == 5 else HEADER
+        bar.line.fill.background()
+        lbl = add_safe_textbox(s8, x, 5.25, 0.8, 0.32)
+        lp = lbl.text_frame.paragraphs[0]
+        lp.text = month[5:]
+        lp.alignment = PP_ALIGN.CENTER
+        style_text(lp.font, 14, DARK, True)
 
-    # 9) Dashboard
-    s9 = prs.slides.add_slide(layout)
-    add_bg(s9, WHITE)
-    add_title(s9, "Interactive dashboard output")
+    # 9. Recommendations
+    s9 = add_slide_base(prs, "Recommendations")
     add_bullets(
         s9,
         [
-            "KPI cards: Average CTR and Average CPA for quick executive visibility.",
-            "Line chart: total clicks by date to monitor trend movement.",
-            "Bar chart: campaign cost comparison to highlight budget concentration.",
-            "Delivered as HTML via Plotly for interactive exploration and filtering.",
+            "Increase budget in Search for scalable traffic.",
+            "Protect Email investment for efficient conversions.",
+            "Improve Display creative and audience targeting.",
+            "Review channel mix monthly for seasonality shifts.",
+            "Set CPA guardrails before expanding spend.",
         ],
-        0.9,
-        1.8,
-        7.4,
-        4.8,
-    )
-    panel = s9.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.RECTANGLE, Inches(8.1), Inches(2.0), Inches(4.8), Inches(3.9))
-    panel.fill.solid()
-    panel.fill.fore_color.rgb = LIGHT_BG
-    panel.line.color.rgb = TEAL
-    ptf = panel.text_frame
-    ptf.clear()
-    p = ptf.paragraphs[0]
-    p.text = "Dashboard\n\n- Avg CTR card\n- Avg CPA card\n- Clicks trend line\n- Campaign cost bar"
-    p.font.size = Pt(16)
-    p.font.color.rgb = NAVY
-
-    # 10) Dimensional data model
-    s10 = prs.slides.add_slide(layout)
-    add_bg(s10, LIGHT_BG)
-    add_title(s10, "Dimensional data model (star schema)")
-    dim_counts = cast(tuple[int, int, int, int], stats.get("dim_counts", (0, 0, 0, 0)))
-    add_bullets(
-        s10,
-        [
-            "Introduced schema design with fact_campaign_daily and dimensions for campaign, channel, and date.",
-            "Model supports scalable BI slicing (time, campaign, channel) and cleaner semantic reporting.",
-            f"Loaded entities: campaigns={dim_counts[0]}, channels={dim_counts[1]}, dates={dim_counts[2]}, fact rows={dim_counts[3]}",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        2.8,
-    )
-    add_code_box(
-        s10,
-        "fact_campaign_daily(date_key, campaign_key, impressions, clicks, cost, conversions, ctr, cpc, cpa)\n"
-        "dim_campaign(campaign_key, campaign_id, channel_key)\n"
-        "dim_channel(channel_key, channel_name)\n"
-        "dim_date(date_key, date_value, year, month, day, week_of_year)",
-        1.2,
-        4.0,
-        11.2,
-        2.2,
     )
 
-    # 11) PySpark processing
-    s11 = prs.slides.add_slide(layout)
-    add_bg(s11, WHITE)
-    add_title(s11, "PySpark processing for scale")
-    add_bullets(
-        s11,
-        [
-            "Raw CSV loaded with explicit schema in Spark DataFrames.",
-            "Applied null handling, type cleanup, metric enrichment (CTR/CPC/CPA), and campaign-date aggregation.",
-            "Used Spark window functions for lag clicks and rolling 7-day average CTR.",
-            "Wrote curated parquet output for cloud-ready downstream processing.",
-        ],
-        0.9,
-        1.8,
-        7.2,
-        4.8,
-    )
-    add_code_box(
-        s11,
-        "w = Window.partitionBy('campaign_id').orderBy('date')\n"
-        "df = df.withColumn('prev_day_clicks', F.lag('clicks', 1).over(w))\n"
-        "df = df.withColumn('rolling_7d_avg_ctr', F.avg('ctr').over(w.rowsBetween(-6, 0)))",
-        7.7,
-        2.0,
-        4.9,
-        2.3,
-    )
+    # 10. How it works
+    s10 = add_slide_base(prs, "How It Works")
+    steps = ["Collect", "Clean", "Store", "Analyze", "Visualize"]
+    for i, step in enumerate(steps):
+        x = 1.0 + i * 1.55
+        box = s10.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(x), Inches(3.3), Inches(1.3), Inches(1.0))
+        box.fill.solid()
+        box.fill.fore_color.rgb = LIGHT
+        box.line.color.rgb = ACCENT
+        txt = add_safe_textbox(s10, x + 0.08, 3.62, 1.14, 0.35)
+        tp = txt.text_frame.paragraphs[0]
+        tp.text = step
+        tp.alignment = PP_ALIGN.CENTER
+        style_text(tp.font, 18, HEADER, True)
+        if i < 4:
+            arr = s10.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.CHEVRON, Inches(x + 1.35), Inches(3.65), Inches(0.18), Inches(0.3))
+            arr.fill.solid()
+            arr.fill.fore_color.rgb = ACCENT
+            arr.line.fill.background()
+    add_bullets(s10, ["Automated, repeatable, and ready for regular reporting."], y=4.8, h=0.8)
 
-    # 12) Data quality + testing
-    s12 = prs.slides.add_slide(layout)
-    add_bg(s12, LIGHT_BG)
-    add_title(s12, "Data quality and testing framework")
-    add_bullets(
-        s12,
-        [
-            "Automated quality checks after cleaning: nulls, ranges, duplicates, completeness, and row-count validation.",
-            "Checks are logged with PASS/FAIL outcomes to quality_report.txt for auditability.",
-            "Pytest suite validates cleaning logic, loading behavior, SQL structures, model creation, and exports.",
-            "Pipeline logging captures runtime, step status, and row counts in pipeline_log.csv.",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        4.8,
-    )
+    # 11. Tools and tech
+    s11 = add_slide_base(prs, "Tools & Tech")
+    tools = [("Python", "PY"), ("SQL", "SQL"), ("PySpark", "SP"), ("Plotly", "PL"), ("SQLite", "DB"), ("Azure-ready", "AZ")]
+    for i, (name, initials) in enumerate(tools):
+        tool_row = i // 3
+        col = i % 3
+        x = 1.0 + col * 2.7
+        y = 2.9 + tool_row * 1.8
+        circle = s11.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.OVAL, Inches(x), Inches(y), Inches(1.0), Inches(1.0))
+        circle.fill.solid()
+        circle.fill.fore_color.rgb = ACCENT if i % 2 == 0 else HEADER
+        circle.line.fill.background()
+        itxt = add_safe_textbox(s11, x, y + 0.28, 1.0, 0.4)
+        ip = itxt.text_frame.paragraphs[0]
+        ip.text = initials
+        ip.alignment = PP_ALIGN.CENTER
+        style_text(ip.font, 18, WHITE, True)
+        nbox = add_safe_textbox(s11, x + 1.1, y + 0.3, 1.6, 0.4)
+        np = nbox.text_frame.paragraphs[0]
+        np.text = name
+        style_text(np.font, 20, DARK, True)
 
-    # 13) Cloud architecture + stack alignment
-    s13 = prs.slides.add_slide(layout)
-    add_bg(s13, WHITE)
-    add_title(s13, "Cloud architecture and role alignment")
-    add_bullets(
-        s13,
-        [
-            "Azure-ready design: Blob Storage (raw), Databricks/ADF (orchestration), Azure SQL/Synapse (warehouse), Power BI (BI).",
-            "Config-driven settings via YAML support local-to-cloud environment transitions.",
-            "Stack aligns with Senior Data Analyst expectations: complex SQL, ETL/ELT, Python, PySpark, data modeling, quality/testing, BI communication.",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        4.8,
-    )
-
-    # 14) Automation
-    s14 = prs.slides.add_slide(layout)
-    add_bg(s14, LIGHT_BG)
-    add_title(s14, "Pipeline automation")
-    add_bullets(
-        s14,
-        [
-            "One command executes every stage end-to-end, from generation through BI export and presentation output.",
-            "Flow includes data quality checks, SQL modeling/analysis, optional PySpark processing, dashboarding, and Power BI-ready data.",
-            "Each step remains modular for interview walkthrough and future productionization.",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        2.8,
-    )
-    add_code_box(
-        s14,
-        "python3 scripts/run_pipeline.py\n\n# generate -> clean -> quality -> load -> SQL model/analysis\n"
-        "# -> optional pyspark -> dashboard -> powerbi export -> presentation",
-        1.6,
-        4.0,
-        10.3,
-        2.3,
-    )
-
-    # 15) Insights
-    s15 = prs.slides.add_slide(layout)
-    add_bg(s15, WHITE)
-    add_title(s15, "Key insights from the data")
-    add_bullets(
-        s15,
-        [
-            "Search_Google drives the largest spend and strongest CTR, making it a high-volume performance engine.",
-            "Email_Newsletter delivers the most efficient acquisition cost (lowest CPA), indicating high conversion efficiency.",
-            "Display_Programmatic has the weakest CTR and highest CPA, suggesting creative or targeting optimization is needed.",
-            "Cross-channel visibility helps rebalance budget toward both scale (Search) and efficiency (Email).",
-        ],
-        0.9,
-        1.8,
-        12.0,
-        4.8,
-    )
-
-    # 16) Conclusion
-    s16 = prs.slides.add_slide(layout)
-    add_bg(s16, NAVY)
-    add_title(s16, "Summary & conclusion", "Reliable pipeline, clear metrics, cloud-ready analytical design")
-    for shp in s16.shapes:
-        if hasattr(shp, "text_frame"):
-            for paragraph in shp.text_frame.paragraphs:
-                paragraph.font.color.rgb = WHITE
-    add_bullets(
-        s16,
-        [
-            "This project now demonstrates an interview-ready analytics stack from ETL through dimensional modeling and BI delivery.",
-            "It combines pandas and PySpark processing, advanced SQL, data quality/testing controls, and Azure deployment awareness.",
-            "Outcome: repeatable analytics workflows with strong technical depth and clear business communication.",
-        ],
-        0.9,
-        2.0,
-        12.0,
-        3.8,
-        19,
-    )
+    # 12. Thank you
+    s12 = add_slide_base(prs, "Thank You", "Questions & Discussion")
+    final_card = s12.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, Inches(1.0), Inches(3.0), Inches(8.0), Inches(1.9))
+    final_card.fill.solid()
+    final_card.fill.fore_color.rgb = LIGHT
+    final_card.line.color.rgb = ACCENT
+    thanks = add_safe_textbox(s12, 1.0, 3.55, 8.0, 0.7)
+    tp = thanks.text_frame.paragraphs[0]
+    tp.text = "Thank you for your time."
+    tp.alignment = PP_ALIGN.CENTER
+    style_text(tp.font, 32, HEADER, True)
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(OUTPUT_PATH))
