@@ -1,6 +1,6 @@
-campaign_id,impressions,clicks,cost,conversions,ctr,cpc,cpa
-Search_Google,1685778,65922,164215.96,4149,0.039105,2.4911,39.5796
-Social_FB,3294922,61987,68671.24,2001,0.018813,1.1078,34.3185
-Social_IG,2652719,41709,41054.69,1171,0.015723,0.9843,35.0595
-Display_Programmatic,4587595,34518,24564.81,463,0.007524,0.7117,53.0557
-Email_Newsletter,1067602,39764,23540.0,3112,0.037246,0.592,7.5643
+campaign_id,total_impressions,total_clicks,total_cost,total_conversions,avg_ctr,avg_cpc,avg_cpa,best_day,worst_day
+Search_Google,1685778,65922,164215.96,4149,0.039105,2.4911,39.5796,Tuesday,Saturday
+Social_FB,3294922,61987,68671.24,2001,0.018813,1.1078,34.3185,Tuesday,Thursday
+Social_IG,2652719,41709,41054.69,1171,0.015723,0.9843,35.0595,Saturday,Sunday
+Display_Programmatic,4587595,34518,24564.81,463,0.007524,0.7117,53.0557,Friday,Monday
+Email_Newsletter,1067602,39764,23540.0,3112,0.037246,0.592,7.5643,Friday,Friday
