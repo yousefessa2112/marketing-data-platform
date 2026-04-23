@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -59,6 +60,16 @@ def query_data() -> dict[str, object]:
             """
         ).fetchone()
 
+        dim_counts = conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM dim_campaign) AS campaign_count,
+                (SELECT COUNT(*) FROM dim_channel) AS channel_count,
+                (SELECT COUNT(*) FROM dim_date) AS date_count,
+                (SELECT COUNT(*) FROM fact_campaign_daily) AS fact_count;
+            """
+        ).fetchone()
+
     return {
         "total_cost": float(total_cost or 0),
         "total_clicks": int(total_clicks or 0),
@@ -67,6 +78,7 @@ def query_data() -> dict[str, object]:
         "highest_cost": highest_cost,
         "highest_ctr": highest_ctr,
         "lowest_cpa": lowest_cpa,
+        "dim_counts": dim_counts,
     }
 
 
@@ -181,8 +193,9 @@ def make_presentation() -> None:
         ("Python", "Orchestrates each pipeline step and automation scripts."),
         ("pandas", "Cleans, validates, transforms, and enriches campaign records."),
         ("SQLite", "Stores cleaned data in a lightweight, queryable database."),
-        ("SQL", "Answers business questions on cost, CTR trends, and CPA."),
-        ("Plotly", "Builds interactive KPI and trend dashboard visuals."),
+        ("SQL + Window Functions", "Drives CTE, LAG, RANK, rolling, and cumulative analysis."),
+        ("PySpark", "Shows scalable transformation and window-based feature engineering."),
+        ("Plotly + Power BI Exports", "Interactive dashboard plus BI-ready semantic extracts."),
     ]
     x = 0.8
     for idx, (tool, desc) in enumerate(cards):
@@ -383,16 +396,17 @@ def make_presentation() -> None:
     p.font.size = Pt(16)
     p.font.color.rgb = NAVY
 
-    # 10) Automation
+    # 10) Dimensional data model
     s10 = prs.slides.add_slide(layout)
     add_bg(s10, LIGHT_BG)
-    add_title(s10, "Pipeline automation")
+    add_title(s10, "Dimensional data model (star schema)")
+    dim_counts = cast(tuple[int, int, int, int], stats.get("dim_counts", (0, 0, 0, 0)))
     add_bullets(
         s10,
         [
-            "One command executes every stage end-to-end, from data generation to dashboard output.",
-            "This makes the workflow repeatable, fast to demo, and simple to maintain.",
-            "Each step is modular (generate, clean, load, analyze, visualize) for easy extension.",
+            "Introduced schema design with fact_campaign_daily and dimensions for campaign, channel, and date.",
+            "Model supports scalable BI slicing (time, campaign, channel) and cleaner semantic reporting.",
+            f"Loaded entities: campaigns={dim_counts[0]}, channels={dim_counts[1]}, dates={dim_counts[2]}, fact rows={dim_counts[3]}",
         ],
         0.9,
         1.8,
@@ -401,19 +415,111 @@ def make_presentation() -> None:
     )
     add_code_box(
         s10,
-        "python3 scripts/run_pipeline.py\n\n# executes:\n# generate_data.py -> clean_data.py -> load_data.py\n# -> run_analysis.py -> generate_dashboard.py",
-        2.0,
+        "fact_campaign_daily(date_key, campaign_key, impressions, clicks, cost, conversions, ctr, cpc, cpa)\n"
+        "dim_campaign(campaign_key, campaign_id, channel_key)\n"
+        "dim_channel(channel_key, channel_name)\n"
+        "dim_date(date_key, date_value, year, month, day, week_of_year)",
+        1.2,
         4.0,
-        9.3,
+        11.2,
+        2.2,
+    )
+
+    # 11) PySpark processing
+    s11 = prs.slides.add_slide(layout)
+    add_bg(s11, WHITE)
+    add_title(s11, "PySpark processing for scale")
+    add_bullets(
+        s11,
+        [
+            "Raw CSV loaded with explicit schema in Spark DataFrames.",
+            "Applied null handling, type cleanup, metric enrichment (CTR/CPC/CPA), and campaign-date aggregation.",
+            "Used Spark window functions for lag clicks and rolling 7-day average CTR.",
+            "Wrote curated parquet output for cloud-ready downstream processing.",
+        ],
+        0.9,
+        1.8,
+        7.2,
+        4.8,
+    )
+    add_code_box(
+        s11,
+        "w = Window.partitionBy('campaign_id').orderBy('date')\n"
+        "df = df.withColumn('prev_day_clicks', F.lag('clicks', 1).over(w))\n"
+        "df = df.withColumn('rolling_7d_avg_ctr', F.avg('ctr').over(w.rowsBetween(-6, 0)))",
+        7.7,
+        2.0,
+        4.9,
         2.3,
     )
 
-    # 11) Insights
-    s11 = prs.slides.add_slide(layout)
-    add_bg(s11, WHITE)
-    add_title(s11, "Key insights from the data")
+    # 12) Data quality + testing
+    s12 = prs.slides.add_slide(layout)
+    add_bg(s12, LIGHT_BG)
+    add_title(s12, "Data quality and testing framework")
     add_bullets(
-        s11,
+        s12,
+        [
+            "Automated quality checks after cleaning: nulls, ranges, duplicates, completeness, and row-count validation.",
+            "Checks are logged with PASS/FAIL outcomes to quality_report.txt for auditability.",
+            "Pytest suite validates cleaning logic, loading behavior, SQL structures, model creation, and exports.",
+            "Pipeline logging captures runtime, step status, and row counts in pipeline_log.csv.",
+        ],
+        0.9,
+        1.8,
+        12.0,
+        4.8,
+    )
+
+    # 13) Cloud architecture + stack alignment
+    s13 = prs.slides.add_slide(layout)
+    add_bg(s13, WHITE)
+    add_title(s13, "Cloud architecture and role alignment")
+    add_bullets(
+        s13,
+        [
+            "Azure-ready design: Blob Storage (raw), Databricks/ADF (orchestration), Azure SQL/Synapse (warehouse), Power BI (BI).",
+            "Config-driven settings via YAML support local-to-cloud environment transitions.",
+            "Stack aligns with Senior Data Analyst expectations: complex SQL, ETL/ELT, Python, PySpark, data modeling, quality/testing, BI communication.",
+        ],
+        0.9,
+        1.8,
+        12.0,
+        4.8,
+    )
+
+    # 14) Automation
+    s14 = prs.slides.add_slide(layout)
+    add_bg(s14, LIGHT_BG)
+    add_title(s14, "Pipeline automation")
+    add_bullets(
+        s14,
+        [
+            "One command executes every stage end-to-end, from generation through BI export and presentation output.",
+            "Flow includes data quality checks, SQL modeling/analysis, optional PySpark processing, dashboarding, and Power BI-ready data.",
+            "Each step remains modular for interview walkthrough and future productionization.",
+        ],
+        0.9,
+        1.8,
+        12.0,
+        2.8,
+    )
+    add_code_box(
+        s14,
+        "python3 scripts/run_pipeline.py\n\n# generate -> clean -> quality -> load -> SQL model/analysis\n"
+        "# -> optional pyspark -> dashboard -> powerbi export -> presentation",
+        1.6,
+        4.0,
+        10.3,
+        2.3,
+    )
+
+    # 15) Insights
+    s15 = prs.slides.add_slide(layout)
+    add_bg(s15, WHITE)
+    add_title(s15, "Key insights from the data")
+    add_bullets(
+        s15,
         [
             "Search_Google drives the largest spend and strongest CTR, making it a high-volume performance engine.",
             "Email_Newsletter delivers the most efficient acquisition cost (lowest CPA), indicating high conversion efficiency.",
@@ -426,20 +532,20 @@ def make_presentation() -> None:
         4.8,
     )
 
-    # 12) Conclusion
-    s12 = prs.slides.add_slide(layout)
-    add_bg(s12, NAVY)
-    add_title(s12, "Summary & conclusion", "Reliable pipeline, clear metrics, actionable insights")
-    for shp in s12.shapes:
+    # 16) Conclusion
+    s16 = prs.slides.add_slide(layout)
+    add_bg(s16, NAVY)
+    add_title(s16, "Summary & conclusion", "Reliable pipeline, clear metrics, cloud-ready analytical design")
+    for shp in s16.shapes:
         if hasattr(shp, "text_frame"):
             for paragraph in shp.text_frame.paragraphs:
                 paragraph.font.color.rgb = WHITE
     add_bullets(
-        s12,
+        s16,
         [
-            "This project demonstrates a complete marketing analytics flow from ingestion to decision-ready dashboarding.",
-            "The same architecture can be scaled to real ad platform exports and scheduled production runs.",
-            "Outcome: cleaner reporting, faster analysis, and better budget decisions across channels.",
+            "This project now demonstrates an interview-ready analytics stack from ETL through dimensional modeling and BI delivery.",
+            "It combines pandas and PySpark processing, advanced SQL, data quality/testing controls, and Azure deployment awareness.",
+            "Outcome: repeatable analytics workflows with strong technical depth and clear business communication.",
         ],
         0.9,
         2.0,

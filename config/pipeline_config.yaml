@@ -1,0 +1,33 @@
+project:
+  name: marketing-data-platform
+  environment: local
+
+paths:
+  raw_data: data/raw_campaign_data.csv
+  clean_data: data/clean_campaign_data.csv
+  database: data/marketing.db
+  dashboard_html: dashboard/marketing_dashboard.html
+  quality_report: data/quality_report.txt
+  pipeline_log: data/pipeline_log.csv
+  spark_output_parquet: data/output/campaign_daily_parquet
+  powerbi_export_dir: data/powerbi_export
+  sql_analysis: sql/analysis.sql
+  sql_data_models: sql/data_models.sql
+  sql_advanced_analysis: sql/advanced_analysis.sql
+
+azure:
+  blob_storage_connection_string: "DefaultEndpointsProtocol=https;AccountName=<storage-account>;AccountKey=<key>;EndpointSuffix=core.windows.net"
+  blob_container: "marketing-raw"
+  azure_sql_connection_string: "Driver={ODBC Driver 18 for SQL Server};Server=tcp:<server>.database.windows.net,1433;Database=<database>;Uid=<user>;Pwd=<password>;Encrypt=yes;"
+  synapse_workspace: "<synapse-workspace-name>"
+  data_factory_name: "<adf-instance-name>"
+  databricks_workspace_url: "https://<workspace>.azuredatabricks.net"
+  key_vault_name: "<key-vault-name>"
+  powerbi_workspace: "<powerbi-workspace-id>"
+
+pipeline:
+  run_pyspark_step: true
+  fail_fast: true
+  expected_min_rows: 600
+  expected_max_rows: 1200
+  allow_zero_conversions: true
